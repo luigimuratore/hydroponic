@@ -1,0 +1,39 @@
+IDROPONICA — D1 MINI / ESP8266
+Versione iniziale: firmware e dashboard ospitati direttamente dal D1 mini.
+
+STATO
+Il progetto non è stato compilato né provato su una scheda reale. Prima di collegare la pompa serve verificare il modulo D4184 e testare lo stato del segnale all'avvio e al reset. La dashboard mostra il comando alla pompa, non conferma che l'acqua fluisca. Non c'è sensore di livello.
+
+1. INSTALLA ARDUINO IDE
+In Preferenze > URL aggiuntive per il Gestore schede, inserisci:
+https://arduino.esp8266.com/stable/package_esp8266com_index.json
+Apri il Gestore schede e installa "esp8266 by ESP8266 Community". Seleziona "LOLIN(WEMOS) D1 R2 & mini". La documentazione ufficiale è https://arduino-esp8266.readthedocs.io/en/latest/installing.html
+
+2. CONFIGURA IL PROGETTO
+Apri Idroponica_D1mini.ino da questa cartella, senza separarlo dal file dashboard.h. Copia config.example.h in config.h nella stessa cartella e modifica le quattro costanti: nome Wi-Fi a 2,4 GHz, password Wi-Fi, nome utente e password per la dashboard. Il file config.h è escluso da Git. Scegli una password personale. Salva il file e non condividere il firmware così modificato: contiene le password.
+
+3. CARICAMENTO E PRIMA PROVA
+Lascia la pompa e il D4184 scollegati. Collega il D1 mini al Mac con un cavo USB dati. In Arduino IDE seleziona la porta della scheda e premi Verifica; poi Carica. Apri Monitor seriale a 115200 baud. Se il Wi-Fi è raggiungibile compare "Dashboard: http://..." con l'indirizzo IP. Apri questo indirizzo nel browser di un dispositivo sulla stessa rete e inserisci le credenziali WEB_USER e WEB_PASSWORD. Puoi anche provare http://idroponica.local, se supportato dalla rete. L'indirizzo IP viene assegnato dal router: per mantenerlo costante usa una prenotazione DHCP nel router.
+
+4. TEST DEL COMANDO
+D1 corrisponde a GPIO5. Per default HIGH = acceso e LOW = spento, ma le varianti del modulo possono comportarsi diversamente: confermare il proprio hardware prima del collegamento. Con la pompa scollegata controlla con un multimetro l'uscita durante accensione, reset, passaggio manuale/automatico e perdita di alimentazione. Il software non può garantire che il pin resti inattivo durante tutto il boot: può servire una protezione hardware. Dopo la verifica dei morsetti del modulo e del diodo, collegare la pompa per una prova sorvegliata.
+
+FUNZIONAMENTO
+All'avvio esce a stato OFF; in manuale resta spenta finché non viene comandata. Se la modalità automatica è stata salvata, dopo 5 secondi la pompa parte e il ciclo ricomincia dall'inizio. Cambiare modalità o tempi ferma la pompa e riavvia l'eventuale ciclo dopo 5 secondi. Impostazioni e modalità sono salvate; lo stato manuale ON non viene ripristinato dopo reset. Se cade il Wi-Fi il ciclo continua. I valori iniziali di 15 minuti ogni 4 ore sono esempi, non una raccomandazione agronomica. La pagina mostra lo stato comandato, non misure reali.
+
+RETE
+La dashboard usa autenticazione HTTP Basic su rete locale, senza cifratura HTTPS: utilizzarla solo su una rete fidata, non esporla a Internet con port forwarding. L'ESP funziona su rete 2,4 GHz; senza Wi-Fi il ciclo automatico continua ma la pagina non è raggiungibile. L'indirizzo 127.0.0.1 usato per l'anteprima sul Mac NON è l'indirizzo dell'ESP.
+
+ALIMENTAZIONE
+Non collegare 12 V al D1 mini. La scheda step-down va misurata a 5 V e collegata all'ingresso appropriato solo dopo aver verificato polarità e modello. Durante la programmazione via USB lasciare scollegata l'uscita 5 V dello step-down, per evitare alimentazioni contemporanee non verificate. Le protezioni elettriche, il galleggiante e lo schema finale sono ancora da definire.
+
+STORICO MISURE
+La nuova sezione accetta manualmente livello stimato in percentuale, pH, EC in mS/cm e temperatura in °C. Salva fino a 500 misure per tipo nella memoria LittleFS dell'ESP. La data viene dall'orologio del telefono o computer che invia il valore. Dopo 500 misure per tipo la scheda rifiuta nuovi inserimenti: non elimina dati automaticamente. Non è ancora previsto un pulsante di esportazione o cancellazione selettiva: conserva i dati prima di interventi sulla memoria. Il grafico mostra solo dati inseriti manualmente.
+
+In Arduino IDE seleziona per il D1 mini una Flash Size con uno spazio filesystem (per esempio 4MB con 1MB FS) e non usare "Erase All Flash Contents" negli aggiornamenti. Se la memoria non è mai stata inizializzata e in seriale appare "Memoria LittleFS non disponibile", SOLO se sei certo che non contenga dati da conservare imposta FORMAT_STORICO = true, carica il firmware, lascia avviare la scheda, poi rimetti subito FORMAT_STORICO = false e carica nuovamente. Con true ogni riavvio formatta e cancella lo storico! Se il montaggio fallisce su un impianto già utilizzato non formattare: fermati e verifica, perché potresti cancellare dati.
+
+Le modifiche a questo firmware non sono state compilate o provate su hardware; testare sempre senza pompa collegata. L'anteprima visualizzata sul Mac memorizza i dati nel browser e non li trasferisce automaticamente sull'ESP.
+
+
+AGGIORNAMENTO PROGRAMMAZIONE
+Il programma usa la durata in minuti e l'intervallo in ore tra due accensioni successive. Esempio: 15 minuti ogni 4 ore significa 15 minuti accesa e 3 ore e 45 minuti spenta. Intervalli: 1–168 ore; durata: 1–1440 minuti, sempre inferiore all'intervallo. In automatico il salvataggio delle impostazioni spegne la pompa e riavvia il ciclo dopo 5 secondi. All'aggiornamento da una versione precedente, le impostazioni della pompa si ripristinano su manuale spento (15 minuti ogni 4 ore come valori iniziali, da verificare). Le misurazioni in LittleFS non sono cancellate dal normale aggiornamento firmware: non usare Erase All Flash Contents e non attivare FORMAT_STORICO su un dispositivo che contiene dati.

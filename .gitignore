@@ -1,0 +1,10 @@
+# Credenziali locali per l'ESP8266
+firmware/Idroponica_D1mini/config.h
+# Output di compilazione e file temporanei
+.pio/
+build/
+.DS_Store
+
+# Cache Python
+__pycache__/
+*.pyc
