@@ -1,6 +1,8 @@
-# Idroponica
+# GIGIPONICA
 
-Progetto per una torre idroponica a ricircolo controllata da un **Wemos D1 mini (ESP8266)**. La dashboard è servita dalla scheda sulla rete locale e permette di controllare la pompa e registrare misurazioni manuali.
+![Dashboard GIGIPONICA per il controllo della torre idroponica](docs/images/dashboard-gigiponica.png)
+
+Progetto per una torre idroponica a ricircolo controllata da un **Wemos D1 mini (ESP8266)**. La dashboard **GIGIPONICA** è servita dalla scheda sulla rete locale e permette di controllare la pompa e registrare misurazioni manuali.
 
 > Stato: prima versione di sviluppo. Il firmware non è ancora stato compilato né verificato sul dispositivo reale. Prima di collegare la pompa, verificare il circuito, il modulo MOSFET e il comportamento del segnale all'avvio e al reset.
 
