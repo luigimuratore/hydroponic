@@ -1,6 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
+#include <ArduinoOTA.h>
 #include <EEPROM.h>
 #include <LittleFS.h>
 #include <math.h>
@@ -19,7 +20,7 @@ const uint8_t PUMP_OFF = LOW;
 ESP8266WebServer server(80);
 struct Config { uint32_t magic; uint16_t onMin; uint16_t everyHours; uint8_t automatic; uint8_t reserved; uint16_t checksum; } cfg;
 const uint32_t MAGIC=0x49445232;
-bool pump=false, mdnsStarted=false, waitingToStart=false;
+bool pump=false, mdnsStarted=false, waitingToStart=false, otaStarted=false, otaLocked=false;
 unsigned long phaseStart=0, bootStart=0;
 const unsigned long BOOT_OFF_MS=5000;
 uint16_t checksum(const Config &c){return (uint16_t)(0x4382 ^ c.onMin ^ (c.everyHours<<1) ^ c.automatic ^ (c.magic & 0xffff) ^ (c.magic>>16));}
@@ -136,14 +137,20 @@ void deleteRecord(){
   LittleFS.remove(bak);headers();server.send(200,"text/plain","OK");
 }
 
-void setup(){digitalWrite(PUMP_PIN,PUMP_OFF);pinMode(PUMP_PIN,OUTPUT);setPump(false);bootStart=millis();phaseStart=bootStart;Serial.begin(115200);loadConfig();waitingToStart=cfg.automatic;LittleFSConfig fsConfig;fsConfig.setAutoFormat(false);LittleFS.setConfig(fsConfig);if(FORMAT_STORICO) LittleFS.format();fsReady=LittleFS.begin();if(fsReady){const char *types[]={"level","ph","ec","temp"};for(const char *type:types)if(!recoverMeasurement(measurementPath(type)))fsReady=false;}if(!fsReady)Serial.println("Memoria LittleFS non disponibile; vedere LEGGIMI.txt");WiFi.mode(WIFI_STA);WiFi.setAutoReconnect(true);WiFi.begin(WIFI_SSID,WIFI_PASSWORD);
+#include "telegram_bot.h"
+
+void setup(){digitalWrite(PUMP_PIN,PUMP_OFF);pinMode(PUMP_PIN,OUTPUT);setPump(false);bootStart=millis();phaseStart=bootStart;Serial.begin(115200);loadConfig();waitingToStart=cfg.automatic;LittleFSConfig fsConfig;fsConfig.setAutoFormat(false);LittleFS.setConfig(fsConfig);if(FORMAT_STORICO) LittleFS.format();fsReady=LittleFS.begin();if(fsReady){const char *types[]={"level","ph","ec","temp"};for(const char *type:types)if(!recoverMeasurement(measurementPath(type)))fsReady=false;}if(!fsReady)Serial.println("Memoria LittleFS non disponibile; vedere LEGGIMI.txt");WiFi.mode(WIFI_STA);WiFi.setAutoReconnect(true);WiFi.begin(WIFI_SSID,WIFI_PASSWORD);if(telegramEnabled())configTime(0,0,NTP_SERVER);
 server.on("/",HTTP_GET,[]{if(!authorized())return;headers();server.sendHeader("Content-Encoding","gzip");server.send_P(200,"text/html; charset=utf-8",(const char*)DASHBOARD_GZ,DASHBOARD_GZ_LEN);});
 server.on("/api/status",HTTP_GET,status);
-server.on("/api/mode",HTTP_POST,[]{if(!authorized())return;String v=server.arg("mode");if(v!="manual"&&v!="auto"){server.send(400,"text/plain","Modalita non valida");return;}setPump(false);cfg.automatic=(v=="auto");phaseStart=millis();bootStart=millis();waitingToStart=cfg.automatic;saveConfig();server.send(200,"text/plain","OK");});
-server.on("/api/pump",HTTP_POST,[]{if(!authorized())return;if(cfg.automatic){server.send(409,"text/plain","Passa prima alla modalita manuale");return;}String v=server.arg("on");if(v!="0"&&v!="1"){server.send(400,"text/plain","Comando non valido");return;}setPump(v=="1");server.send(200,"text/plain","OK");});
-server.on("/api/settings",HTTP_POST,[]{if(!authorized())return;uint16_t on,every;if(!parseMinutes(server.arg("on"),on)||!parseMinutes(server.arg("every"),every)||every>168||on>=every*60UL){server.send(400,"text/plain","Intervallo non valido");return;}cfg.onMin=on;cfg.everyHours=every;setPump(false);bootStart=millis();phaseStart=bootStart;waitingToStart=cfg.automatic;saveConfig();server.send(200,"text/plain","OK");});
+server.on("/api/mode",HTTP_POST,[]{if(!authorized())return;if(otaLocked){server.send(503,"text/plain","Aggiornamento OTA: riavvia la scheda");return;}String v=server.arg("mode");if(v!="manual"&&v!="auto"){server.send(400,"text/plain","Modalita non valida");return;}setPump(false);cfg.automatic=(v=="auto");phaseStart=millis();bootStart=millis();waitingToStart=cfg.automatic;saveConfig();server.send(200,"text/plain","OK");});
+server.on("/api/pump",HTTP_POST,[]{if(!authorized())return;if(otaLocked){server.send(503,"text/plain","Aggiornamento OTA: riavvia la scheda");return;}if(cfg.automatic){server.send(409,"text/plain","Passa prima alla modalita manuale");return;}String v=server.arg("on");if(v!="0"&&v!="1"){server.send(400,"text/plain","Comando non valido");return;}setPump(v=="1");server.send(200,"text/plain","OK");});
+server.on("/api/settings",HTTP_POST,[]{if(!authorized())return;if(otaLocked){server.send(503,"text/plain","Aggiornamento OTA: riavvia la scheda");return;}uint16_t on,every;if(!parseMinutes(server.arg("on"),on)||!parseMinutes(server.arg("every"),every)||every>168||on>=every*60UL){server.send(400,"text/plain","Intervallo non valido");return;}cfg.onMin=on;cfg.everyHours=every;setPump(false);bootStart=millis();phaseStart=bootStart;waitingToStart=cfg.automatic;saveConfig();server.send(200,"text/plain","OK");});
 server.on("/api/records",HTTP_GET,getRecords);
 server.on("/api/records",HTTP_POST,addRecord);
 server.on("/api/records/delete",HTTP_POST,deleteRecord);
+ArduinoOTA.setHostname("idroponica");
+ArduinoOTA.setPassword(OTA_PASSWORD);
+ArduinoOTA.onStart([](){otaLocked=true;setPump(false);Serial.println("OTA avviato: pompa spenta");});
+ArduinoOTA.onError([](ota_error_t error){Serial.printf("OTA errore %u%s\n",(unsigned)error,otaLocked?": pompa bloccata fino al riavvio":"");});
 server.onNotFound([](){server.send(404,"text/plain","Non trovato");});server.begin();Serial.println("\nAvvio idroponica: pompa OFF");}
-void loop(){server.handleClient();unsigned long now=millis();if(cfg.automatic){if(waitingToStart && (unsigned long)(now-bootStart)<BOOT_OFF_MS){if(pump)setPump(false);}else if(waitingToStart){waitingToStart=false;setPump(true);phaseStart=now;}else {unsigned long duration=(unsigned long)(pump?cfg.onMin:(cfg.everyHours*60UL-cfg.onMin))*60000UL;if((unsigned long)(now-phaseStart)>=duration){setPump(!pump);phaseStart=now;}}}if(WiFi.status()==WL_CONNECTED){if(!mdnsStarted){Serial.print("Dashboard: http://");Serial.println(WiFi.localIP());mdnsStarted=MDNS.begin("idroponica");}if(mdnsStarted)MDNS.update();}else mdnsStarted=false;yield();}
+void loop(){server.handleClient();unsigned long now=millis();if(cfg.automatic&&!otaLocked){if(waitingToStart && (unsigned long)(now-bootStart)<BOOT_OFF_MS){if(pump)setPump(false);}else if(waitingToStart){waitingToStart=false;setPump(true);phaseStart=now;}else {unsigned long duration=(unsigned long)(pump?cfg.onMin:(cfg.everyHours*60UL-cfg.onMin))*60000UL;if((unsigned long)(now-phaseStart)>=duration){setPump(!pump);phaseStart=now;}}}if(WiFi.status()==WL_CONNECTED){if(!mdnsStarted){Serial.print("Dashboard: http://");Serial.println(WiFi.localIP());mdnsStarted=MDNS.begin("idroponica");if(mdnsStarted)MDNS.enableArduino(8266,true);}if(!otaStarted){ArduinoOTA.begin(false);otaStarted=true;}ArduinoOTA.handle();if(mdnsStarted)MDNS.update();telegramPoll();}else mdnsStarted=false;yield();}
