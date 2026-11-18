@@ -67,12 +67,12 @@ void getRecords(){
   if(!f){server.send(500,"text/plain","Impossibile leggere lo storico");return;}
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200,"application/json","");
-  server.sendContent("["); bool first=true;
+  server.sendContent("["); bool first=true; unsigned index=0;
   while(f.available()){
     String line=f.readStringUntil('\n'); line.trim();
-    unsigned long t; double v;
+    unsigned row=index++; unsigned long t; double v;
     if(!readMeasurement(line,t,v))continue;
-    String item=String(first?"":",")+"{\"t\":"+String(t)+",\"v\":"+String(v,3)+"}";
+    String item=String(first?"":",")+"{\"t\":"+String(t)+",\"v\":"+String(v,3)+",\"i\":"+String(row)+"}";
     server.sendContent(item);first=false;
     yield();
   }
@@ -99,7 +99,44 @@ void addRecord(){
   server.send(200,"text/plain","OK");
 }
 
-void setup(){digitalWrite(PUMP_PIN,PUMP_OFF);pinMode(PUMP_PIN,OUTPUT);setPump(false);bootStart=millis();phaseStart=bootStart;Serial.begin(115200);loadConfig();waitingToStart=cfg.automatic;LittleFSConfig fsConfig;fsConfig.setAutoFormat(false);LittleFS.setConfig(fsConfig);if(FORMAT_STORICO) LittleFS.format();fsReady=LittleFS.begin();if(!fsReady)Serial.println("Memoria LittleFS non disponibile; vedere LEGGIMI.txt");WiFi.mode(WIFI_STA);WiFi.setAutoReconnect(true);WiFi.begin(WIFI_SSID,WIFI_PASSWORD);
+
+// Recover an interrupted replacement before opening the history.
+bool recoverMeasurement(const String &path){
+  String bak=path+".bak", tmp=path+".tmp";
+  if(LittleFS.exists(bak)){
+    if(!LittleFS.exists(path)){if(!LittleFS.rename(bak,path))return false;}
+    else if(!LittleFS.remove(bak))return false;
+  }
+  if(LittleFS.exists(tmp)&&!LittleFS.remove(tmp))return false;
+  return true;
+}
+void deleteRecord(){
+  if(!authorized())return;
+  String type=server.arg("type"),path=measurementPath(type),idx=server.arg("index"),ts=server.arg("ts"),value=server.arg("value");
+  if(path==""||idx.length()==0||idx.length()>4||ts.length()!=10||value.length()>24){server.send(400,"text/plain","Dato non valido");return;}
+  for(unsigned i=0;i<idx.length();i++)if(idx[i]<'0'||idx[i]>'9'){server.send(400,"text/plain","Indice non valido");return;}
+  unsigned long stamp;double val;
+  if(!readMeasurement(ts+","+value,stamp,val)||!inRange(type,val)){server.send(400,"text/plain","Dato non valido");return;}
+  if(!fsReady){server.send(503,"text/plain","Memoria non disponibile");return;}
+  if(!recoverMeasurement(path)){server.send(500,"text/plain","Recupero storico fallito");return;}
+  File src=LittleFS.open(path,"r");if(!src){server.send(404,"text/plain","Misurazione non trovata");return;}
+  String tmp=path+".tmp",bak=path+".bak";
+  File dst=LittleFS.open(tmp,"w");if(!dst){src.close();server.send(500,"text/plain","Scrittura fallita");return;}
+  unsigned long target=idx.toInt(),row=0;bool found=false,ok=true;
+  while(src.available()){
+    String line=src.readStringUntil('\n');String trimmed=line;trimmed.trim();
+    if(row++==target){unsigned long t;double v;if(!readMeasurement(trimmed,t,v)||t!=stamp||String(v,3)!=String(val,3)){ok=false;break;}found=true;}
+    else {line+="\n";if(dst.print(line)!=line.length()){ok=false;break;}}
+    yield();
+  }
+  dst.flush();dst.close();src.close();
+  if(!ok||!found){LittleFS.remove(tmp);server.send(ok?404:409,"text/plain",ok?"Misurazione non trovata":"Lo storico e cambiato; aggiorna la pagina");return;}
+  if(!LittleFS.rename(path,bak)){LittleFS.remove(tmp);server.send(500,"text/plain","Salvataggio fallito");return;}
+  if(!LittleFS.rename(tmp,path)){if(!LittleFS.rename(bak,path))Serial.println("Ripristino storico necessario al riavvio");server.send(500,"text/plain","Salvataggio fallito");return;}
+  LittleFS.remove(bak);headers();server.send(200,"text/plain","OK");
+}
+
+void setup(){digitalWrite(PUMP_PIN,PUMP_OFF);pinMode(PUMP_PIN,OUTPUT);setPump(false);bootStart=millis();phaseStart=bootStart;Serial.begin(115200);loadConfig();waitingToStart=cfg.automatic;LittleFSConfig fsConfig;fsConfig.setAutoFormat(false);LittleFS.setConfig(fsConfig);if(FORMAT_STORICO) LittleFS.format();fsReady=LittleFS.begin();if(fsReady){const char *types[]={"level","ph","ec","temp"};for(const char *type:types)if(!recoverMeasurement(measurementPath(type)))fsReady=false;}if(!fsReady)Serial.println("Memoria LittleFS non disponibile; vedere LEGGIMI.txt");WiFi.mode(WIFI_STA);WiFi.setAutoReconnect(true);WiFi.begin(WIFI_SSID,WIFI_PASSWORD);
 server.on("/",HTTP_GET,[]{if(!authorized())return;headers();server.sendHeader("Content-Encoding","gzip");server.send_P(200,"text/html; charset=utf-8",(const char*)DASHBOARD_GZ,DASHBOARD_GZ_LEN);});
 server.on("/api/status",HTTP_GET,status);
 server.on("/api/mode",HTTP_POST,[]{if(!authorized())return;String v=server.arg("mode");if(v!="manual"&&v!="auto"){server.send(400,"text/plain","Modalita non valida");return;}setPump(false);cfg.automatic=(v=="auto");phaseStart=millis();bootStart=millis();waitingToStart=cfg.automatic;saveConfig();server.send(200,"text/plain","OK");});
@@ -107,5 +144,6 @@ server.on("/api/pump",HTTP_POST,[]{if(!authorized())return;if(cfg.automatic){ser
 server.on("/api/settings",HTTP_POST,[]{if(!authorized())return;uint16_t on,every;if(!parseMinutes(server.arg("on"),on)||!parseMinutes(server.arg("every"),every)||every>168||on>=every*60UL){server.send(400,"text/plain","Intervallo non valido");return;}cfg.onMin=on;cfg.everyHours=every;setPump(false);bootStart=millis();phaseStart=bootStart;waitingToStart=cfg.automatic;saveConfig();server.send(200,"text/plain","OK");});
 server.on("/api/records",HTTP_GET,getRecords);
 server.on("/api/records",HTTP_POST,addRecord);
+server.on("/api/records/delete",HTTP_POST,deleteRecord);
 server.onNotFound([](){server.send(404,"text/plain","Non trovato");});server.begin();Serial.println("\nAvvio idroponica: pompa OFF");}
 void loop(){server.handleClient();unsigned long now=millis();if(cfg.automatic){if(waitingToStart && (unsigned long)(now-bootStart)<BOOT_OFF_MS){if(pump)setPump(false);}else if(waitingToStart){waitingToStart=false;setPump(true);phaseStart=now;}else {unsigned long duration=(unsigned long)(pump?cfg.onMin:(cfg.everyHours*60UL-cfg.onMin))*60000UL;if((unsigned long)(now-phaseStart)>=duration){setPump(!pump);phaseStart=now;}}}if(WiFi.status()==WL_CONNECTED){if(!mdnsStarted){Serial.print("Dashboard: http://");Serial.println(WiFi.localIP());mdnsStarted=MDNS.begin("idroponica");}if(mdnsStarted)MDNS.update();}else mdnsStarted=false;yield();}
